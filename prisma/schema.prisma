@@ -1,0 +1,365 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ── ENUM DEFINITIONS ──────────────────────────
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN_GUDANG
+  ADMIN_PENJUALAN
+  MANAGER
+  VIEWER
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+  DISCONTINUED
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  PACKING
+  SHIPPED
+  DELIVERED
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+}
+
+enum PaymentMethod {
+  LC
+  TT
+  DP
+}
+
+enum BuyerSegment {
+  VIP
+  REGULAR
+  NEW
+}
+
+enum StockMovementType {
+  RECEIPT
+  ISSUE
+  TRANSFER_IN
+  TRANSFER_OUT
+  ADJUSTMENT
+}
+
+// ── USERS ─────────────────────────────────────
+
+model User {
+  id               String    @id @default(cuid())
+  name             String
+  email            String    @unique
+  password         String
+  role             Role      @default(VIEWER)
+  isActive         Boolean   @default(true)
+  twoFactorEnabled Boolean   @default(false)
+  twoFactorSecret  String?
+  lastLoginAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  auditLogs AuditLog[]
+  orders    Order[]    @relation("CreatedByUser")
+
+  @@map("users")
+}
+
+// ── PRODUCTS (BARANG) ──────────────────────────
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  code      String   @unique
+  createdAt DateTime @default(now())
+
+  products Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String        @id @default(cuid())
+  sku         String        @unique
+  name        String
+  description String?
+  hsCode      String?
+  categoryId  String
+  category    Category      @relation(fields: [categoryId], references: [id])
+  unit        String
+  priceIdr    Decimal       @db.Decimal(15, 2)
+  priceUsd    Decimal?      @db.Decimal(10, 2)
+  priceEur    Decimal?      @db.Decimal(10, 2)
+  minStock    Int           @default(0)
+  status      ProductStatus @default(ACTIVE)
+  images      ProductImage[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  orderItems OrderItem[]
+  stockItems StockItem[]
+
+  @@map("products")
+}
+
+model ProductImage {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url       String
+  fileName  String
+  isPrimary Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@map("product_images")
+}
+
+// ── WAREHOUSES & STOCK ─────────────────────────
+
+model Warehouse {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  address   String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  stockItems StockItem[]
+  movements  StockMovement[]
+
+  @@map("warehouses")
+}
+
+model StockItem {
+  id          String    @id @default(cuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id])
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  quantity    Int       @default(0)
+  batchNo     String?
+  expiredDate DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([productId, warehouseId, batchNo])
+  @@map("stock_items")
+}
+
+model StockMovement {
+  id          String            @id @default(cuid())
+  productId   String
+  warehouseId String
+  warehouse   Warehouse         @relation(fields: [warehouseId], references: [id])
+  type        StockMovementType
+  quantity    Int
+  batchNo     String?
+  reference   String?
+  notes       String?
+  createdAt   DateTime          @default(now())
+  createdById String
+
+  @@map("stock_movements")
+}
+
+// ── BUYERS (PELANGGAN) ─────────────────────────
+
+model Country {
+  id     String  @id @default(cuid())
+  code   String  @unique
+  name   String
+  region String?
+
+  buyers Buyer[]
+  orders Order[]
+
+  @@map("countries")
+}
+
+model Buyer {
+  id            String       @id @default(cuid())
+  code          String      @unique
+  companyName   String
+  contactPerson String?
+  email         String?
+  phone         String?
+  address       String?
+  countryId     String
+  country       Country     @relation(fields: [countryId], references: [id])
+  segment       BuyerSegment @default(NEW)
+  creditLimit   Decimal?    @db.Decimal(15, 2)
+  paymentTerms  Int         @default(30)
+  notes         String?
+  isActive      Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  documents BuyerDocument[]
+  orders    Order[]
+
+  @@map("buyers")
+}
+
+model BuyerDocument {
+  id        String   @id @default(cuid())
+  buyerId   String
+  buyer     Buyer    @relation(fields: [buyerId], references: [id], onDelete: Cascade)
+  type      String
+  fileName  String
+  fileUrl   String
+  createdAt DateTime @default(now())
+
+  @@map("buyer_documents")
+}
+
+// ── ORDERS (SALES ORDER) ───────────────────────
+
+model Order {
+  id           String      @id @default(cuid())
+  orderNo      String      @unique
+  buyerId      String
+  buyer        Buyer       @relation(fields: [buyerId], references: [id])
+  countryId   String
+  country      Country     @relation(fields: [countryId], references: [id])
+  incoterms    String
+  currency     String      @default("USD")
+  exchangeRate Decimal?    @db.Decimal(10, 4)
+  status       OrderStatus @default(DRAFT)
+  notes        String?
+  createdById  String
+  createdBy    User        @relation("CreatedByUser", fields: [createdById], references: [id])
+  confirmedAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  items       OrderItem[]
+  shipment    Shipment?
+  invoice     Invoice?
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id         String  @id @default(cuid())
+  orderId    String
+  order      Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId  String
+  product    Product @relation(fields: [productId], references: [id])
+  quantity   Int
+  unitPrice  Decimal @db.Decimal(10, 2)
+  totalPrice Decimal @db.Decimal(15, 2)
+  notes      String?
+
+  @@map("order_items")
+}
+
+// ── SHIPMENTS (PENGIRIMAN) ─────────────────────
+
+model Shipment {
+  id            String    @id @default(cuid())
+  orderId       String    @unique
+  order         Order     @relation(fields: [orderId], references: [id])
+  shipmentNo    String    @unique
+  vesselName    String?
+  voyageNo      String?
+  blNo          String?
+  portOfLoading String?
+  portOfDest    String?
+  etd           DateTime?
+  eta           DateTime?
+  actualDepart  DateTime?
+  actualArrive  DateTime?
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  documents ShipmentDocument[]
+
+  @@map("shipments")
+}
+
+model ShipmentDocument {
+  id         String   @id @default(cuid())
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
+  type       String
+  fileName   String
+  fileUrl    String
+  createdAt  DateTime @default(now())
+
+  @@map("shipment_documents")
+}
+
+// ── INVOICES (KEUANGAN) ────────────────────────
+
+model Invoice {
+  id             String        @id @default(cuid())
+  orderId        String        @unique
+  order          Order         @relation(fields: [orderId], references: [id])
+  invoiceNo     String        @unique
+  invoiceDate   DateTime      @default(now())
+  dueDate       DateTime?
+  currency     String        @default("USD")
+  subtotal      Decimal       @db.Decimal(15, 2)
+  taxAmount    Decimal       @default(0) @db.Decimal(15, 2)
+  totalAmount  Decimal       @db.Decimal(15, 2)
+  paidAmount   Decimal       @default(0) @db.Decimal(15, 2)
+  paymentStatus PaymentStatus  @default(UNPAID)
+  paymentMethod PaymentMethod?
+  pdfUrl       String?
+  notes        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  payments Payment[]
+
+  @@map("invoices")
+}
+
+model Payment {
+  id        String   @id @default(cuid())
+  invoiceId String
+  invoice   Invoice  @relation(fields: [invoiceId], references: [id])
+  amount    Decimal  @db.Decimal(15, 2)
+  currency  String
+  paidAt    DateTime @default(now())
+  reference String?
+  notes     String?
+  createdAt DateTime @default(now())
+
+  @@map("payments")
+}
+
+// ── AUDIT LOG ──────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String
+  module    String
+  recordId  String?
+  oldData  Json?
+  newData  Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@map("audit_logs")
+}
